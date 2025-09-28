@@ -1,13 +1,13 @@
 <?php
 
-// app/Http/Controllers/Auth/LoginController.php
-
 namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Models\Role;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
 
 class LoginController extends Controller
@@ -27,16 +27,17 @@ class LoginController extends Controller
         ]);
 
         if (Auth::attempt($credentials)) {
-            // PENTING: Cek apakah pengguna adalah admin
-            if (Auth::user()->role !== 'admin') {
-                Auth::logout(); // Jika bukan admin, paksa logout
+            $user = Auth::user();
+
+            // PENTING: Cek apakah pengguna memiliki role admin
+            if (!$user->role || $user->role->name !== 'admin') {
+                Auth::logout();
                 return back()->withErrors([
                     'email' => 'Hanya admin yang dapat login melalui halaman ini.',
                 ]);
             }
 
             $request->session()->regenerate();
-            // ===== UBAH BAGIAN INI =====
             return redirect()->intended('/dashboard');
         }
 
@@ -57,21 +58,40 @@ class LoginController extends Controller
         try {
             $googleUser = Socialite::driver('google')->user();
 
-            $user = User::updateOrCreate(
-                ['email' => $googleUser->getEmail()],
-                [
+            // Cari atau buat user
+            $user = User::where('email', $googleUser->getEmail())->first();
+
+            if (!$user) {
+                // Jika user baru, buat dengan role default (free_user)
+                $freeUserRole = Role::where('name', 'free_user')->first();
+
+                $user = User::create([
                     'name' => $googleUser->getName(),
+                    'email' => $googleUser->getEmail(),
                     'google_id' => $googleUser->getId(),
-                    // 'role' tidak diatur di sini, default-nya akan 'free_user'
-                ]
-            );
+                    'role_id' => $freeUserRole ? $freeUserRole->id : null,
+                    'password' => null, // Password null untuk user Google
+                ]);
+            } else {
+                // Update user yang sudah ada
+                $user->update([
+                    'google_id' => $googleUser->getId(),
+                    'name' => $googleUser->getName(),
+                ]);
+            }
 
             Auth::login($user);
 
-            // ===== UBAH BAGIAN INI =====
-            return redirect('/dashboard');
+            // Redirect berdasarkan role
+            if ($user->role && $user->role->name === 'admin') {
+                return redirect('/dashboard');
+            } else {
+                // Untuk user biasa, redirect ke halaman yang sesuai
+                return redirect('/user/dashboard'); // Ganti dengan route user biasa
+            }
 
         } catch (\Exception $e) {
+            Log::error('Google Login Error: ' . $e->getMessage());
             return redirect('/login')->with('error', 'Terjadi kesalahan saat login dengan Google.');
         }
     }
@@ -83,7 +103,6 @@ class LoginController extends Controller
         Auth::logout();
         $request->session()->invalidate();
         $request->session()->regenerateToken();
-        return redirect('/dashboard');
+        return redirect('/');
     }
 }
-
